@@ -1,8 +1,14 @@
 package bech32ics20
 
 import (
+	"context"
 	"encoding/json"
-	"math/rand"
+	"fmt"
+	"github.com/cosmos/cosmos-sdk/client"
+	cdctypes "github.com/cosmos/cosmos-sdk/codec/types"
+	"github.com/gorilla/mux"
+	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/spf13/cobra"
 	"time"
 
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -11,58 +17,103 @@ import (
 	"github.com/cosmos/cosmos-sdk/telemetry"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/module"
-	simtypes "github.com/cosmos/cosmos-sdk/types/simulation"
-	"github.com/cosmos/cosmos-sdk/x/bank"
-	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
-	"github.com/cosmos/cosmos-sdk/x/bank/simulation"
 	"github.com/cosmos/cosmos-sdk/x/bank/types"
 
+	bech32ibccli "github.com/osmosis-labs/bech32-ibc/x/bech32ibc/client/cli"
+	bech32ibctypes "github.com/osmosis-labs/bech32-ibc/x/bech32ibc/types"
 	"github.com/osmosis-labs/bech32-ibc/x/bech32ics20/keeper"
 )
 
 var (
-	_ module.AppModule           = AppModule{}
-	_ module.AppModuleSimulation = AppModule{}
+	_ module.AppModule      = AppModule{}
+	_ module.AppModuleBasic = AppModuleBasic{}
 )
+
+// ----------------------------------------------------------------------------
+// AppModuleBasic
+// ----------------------------------------------------------------------------
+
+// AppModuleBasic implements the AppModuleBasic interface for the capability module.
+type AppModuleBasic struct {
+	cdc codec.Codec
+}
+
+func NewAppModuleBasic(cdc codec.Codec) AppModuleBasic {
+	return AppModuleBasic{cdc: cdc}
+}
+
+// Name returns the capability module's name.
+func (AppModuleBasic) Name() string {
+	return types.ModuleName
+}
+
+func (AppModuleBasic) RegisterCodec(cdc *codec.LegacyAmino) {
+	bech32ibctypes.RegisterCodec(cdc)
+}
+
+func (AppModuleBasic) RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
+	bech32ibctypes.RegisterCodec(cdc)
+}
+
+// RegisterInterfaces registers the module's interface types
+func (a AppModuleBasic) RegisterInterfaces(reg cdctypes.InterfaceRegistry) {
+	types.RegisterInterfaces(reg)
+}
+
+// DefaultGenesis returns the capability module's default genesis state.
+func (AppModuleBasic) DefaultGenesis(cdc codec.JSONCodec) json.RawMessage {
+	return cdc.MustMarshalJSON(bech32ibctypes.DefaultGenesis())
+}
+
+// ValidateGenesis performs genesis state validation for the capability module.
+func (AppModuleBasic) ValidateGenesis(cdc codec.JSONCodec, config client.TxEncodingConfig, bz json.RawMessage) error {
+	var genState types.GenesisState
+	if err := cdc.UnmarshalJSON(bz, &genState); err != nil {
+		return fmt.Errorf("failed to unmarshal %s genesis state: %w", types.ModuleName, err)
+	}
+	return genState.Validate()
+}
+
+// RegisterRESTRoutes registers the capability module's REST service handlers.
+func (AppModuleBasic) RegisterRESTRoutes(clientCtx client.Context, rtr *mux.Router) {
+}
+
+// RegisterGRPCGatewayRoutes registers the gRPC Gateway routes for the module.
+func (AppModuleBasic) RegisterGRPCGatewayRoutes(clientCtx client.Context, mux *runtime.ServeMux) {
+	types.RegisterQueryHandlerClient(context.Background(), mux, types.NewQueryClient(clientCtx))
+}
+
+// GetTxCmd returns the capability module's root tx command.
+func (a AppModuleBasic) GetTxCmd() *cobra.Command {
+	return bech32ibccli.NewTxCmd()
+}
+
+// GetQueryCmd returns the capability module's root query command.
+func (AppModuleBasic) GetQueryCmd() *cobra.Command {
+	return bech32ibccli.GetQueryCmd(types.StoreKey)
+}
+
+// ----------------------------------------------------------------------------
+// AppModule
+// ----------------------------------------------------------------------------
 
 // AppModule implements an application module for the bank module.
 type AppModule struct {
-	bank.AppModuleBasic
+	AppModuleBasic
 
 	keeper keeper.Keeper
-}
-
-// RegisterServices registers module services.
-// BE WARNED: THIS NEEDS TO BE UPDATED EVERY BANK UPDATE
-func (am AppModule) RegisterServices(cfg module.Configurator) {
-	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
-	types.RegisterQueryServer(cfg.QueryServer(), am.keeper)
-
-	var m bankkeeper.Migrator
-	if bankPtr, ok := am.keeper.Keeper.(*bankkeeper.BaseKeeper); ok {
-		m = bankkeeper.NewMigrator(*bankPtr)
-	} else {
-		m = bankkeeper.NewMigrator(am.keeper.Keeper.(bankkeeper.BaseKeeper))
-	}
-	cfg.RegisterMigration(types.ModuleName, 1, m.Migrate1to2)
 }
 
 // NewAppModule creates a new AppModule object
 func NewAppModule(cdc codec.Codec, keeper keeper.Keeper) AppModule {
 	return AppModule{
-		AppModuleBasic: bank.NewAppModuleBasic(cdc),
-
-		keeper: keeper,
+		AppModuleBasic: NewAppModuleBasic(cdc),
+		keeper:         keeper,
 	}
 }
 
 // Name returns the bank module's name.
 func (AppModule) Name() string { return types.ModuleName }
-
-// RegisterInvariants registers the bank module invariants.
-func (am AppModule) RegisterInvariants(ir sdk.InvariantRegistry) {
-	bankkeeper.RegisterInvariants(ir, am.keeper.Keeper)
-}
 
 // Route returns the message routing key for the bank module.
 func (am AppModule) Route() sdk.Route {
@@ -73,8 +124,19 @@ func (am AppModule) Route() sdk.Route {
 func (AppModule) QuerierRoute() string { return types.RouterKey }
 
 // LegacyQuerierHandler returns the bank module sdk.Querier.
-func (am AppModule) LegacyQuerierHandler(legacyQuerierCdc *codec.LegacyAmino) sdk.Querier {
-	return bankkeeper.NewQuerier(am.keeper, legacyQuerierCdc)
+func (am AppModule) LegacyQuerierHandler(_ *codec.LegacyAmino) sdk.Querier {
+	return nil
+}
+
+// RegisterServices registers module services.
+// BE WARNED: THIS NEEDS TO BE UPDATED EVERY BANK UPDATE
+func (am AppModule) RegisterServices(cfg module.Configurator) {
+	types.RegisterMsgServer(cfg.MsgServer(), keeper.NewMsgServerImpl(am.keeper))
+	types.RegisterQueryServer(cfg.QueryServer(), am.keeper)
+}
+
+// RegisterInvariants registers the bank module invariants.
+func (am AppModule) RegisterInvariants(_ sdk.InvariantRegistry) {
 }
 
 // InitGenesis performs genesis initialization for the bech32ics20 module. It returns
@@ -107,30 +169,3 @@ func (AppModule) EndBlock(_ sdk.Context, _ abci.RequestEndBlock) []abci.Validato
 
 // ConsensusVersion implements AppModule/ConsensusVersion.
 func (AppModule) ConsensusVersion() uint64 { return 2 }
-
-// ____________________________________________________________________________
-
-// AppModuleSimulation functions
-
-// GenerateGenesisState creates a randomized GenState of the bank module.
-func (AppModule) GenerateGenesisState(simState *module.SimulationState) {
-	simulation.RandomizedGenState(simState)
-}
-
-// ProposalContents doesn't return any content functions for governance proposals.
-func (AppModule) ProposalContents(_ module.SimulationState) []simtypes.WeightedProposalContent {
-	return nil
-}
-
-// RandomizedParams creates randomized bank param changes for the simulator.
-func (AppModule) RandomizedParams(r *rand.Rand) []simtypes.ParamChange {
-	return simulation.ParamChanges(r)
-}
-
-// RegisterStoreDecoder registers a decoder for supply module's types
-func (am AppModule) RegisterStoreDecoder(sdr sdk.StoreDecoderRegistry) {}
-
-// WeightedOperations returns the all the gov module operations with their respective weights.
-func (am AppModule) WeightedOperations(simState module.SimulationState) []simtypes.WeightedOperation {
-	return []simtypes.WeightedOperation{}
-}
